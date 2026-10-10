@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import claude, codex, guard, tree
+from . import guard, tree
 from .binaries import find_binary
 from .classify import classify, unwrap_harness_message
 from .launch import CLAUDE_SDK_OWNED, Launch, plan_env
@@ -214,6 +214,10 @@ def _stopped_failure(ending: _Stopped, profile: Profile) -> Failure:
 
 def _run_claude(prompt, profile, cwd, launch, env, session, on_event, cancel, stderr_tail,
                 context, on_start) -> Result:
+    # Each SDK is imported by the run that drives it, so importing the package
+    # costs neither: a caller that only reads profiles never loads them.
+    from . import claude
+
     resume_id = session.id if session.kind == "resume" else None
     session_id = session.id if session.kind == "pinned" else None
     if session.kind == "fresh":
@@ -285,6 +289,8 @@ def _run_claude(prompt, profile, cwd, launch, env, session, on_event, cancel, st
 
 def _run_codex(prompt, profile, cwd, launch, env, session, on_event, cancel, stderr_tail,
                context, on_start) -> Result:
+    from . import codex
+
     resume_id = session.id if session.kind == "resume" else None
     outcome = codex.Outcome()
     cfg = codex.config(profile, launcher=str(launch.wrapper), cwd=cwd, env=env)

@@ -1,6 +1,6 @@
 # callva-harness-runner
 
-One run of an agent harness, as a Python library. A harness is the vendor's agent runtime: Claude Code, driven through Anthropic's `claude-agent-sdk`, or the Codex CLI, driven through OpenAI's `openai-codex`, always the CLI installed on the machine. A profile is one harness with its settings, a flat set of explicit knobs. A run is one turn: a prompt goes in, the harness works to its end or its deadline, and one `Result` comes out, with the failure named. The deadline kills everything the harness started. What a run may do is whatever its profile says, and nothing else; the library never decides it. A caller names a profile and never a harness: the profile names its harness. It ships six profiles, `claude-read`, `claude-act`, `claude-read-sandboxed`, `codex-read`, `codex-act` and `codex-read-sandboxed`, that a caller loads by name, and a caller's own profile files of the same name come first.
+One run of an agent harness, as a Python library. A harness is the vendor's agent runtime: Claude Code, driven through Anthropic's `claude-agent-sdk`, or the Codex CLI, driven through OpenAI's `openai-codex`, always the CLI installed on the machine. A profile is one harness with its settings, a flat set of explicit knobs. A run is one turn: a prompt goes in, the harness works to its end or its deadline, and one `Result` comes out, with the failure named. The deadline kills everything the harness started. What a run may do is whatever its profile says, and nothing else; the library never decides it. A caller names a profile and never a harness: the profile names its harness. It ships six profiles, `claude-read`, `claude-act`, `claude-read-sandboxed`, `codex-read`, `codex-act` and `codex-read-sandboxed`, that a caller loads by name, and a caller's own profile files of the same name come first. A caller that keeps its profiles in its own PostgreSQL store, versioned and scoped to a project or to everyone, uses the table this library defines and the functions under Profiles in a store.
 
 `DESIGN.md` is the contract. The source is at https://github.com/callva-io/harness-runner.
 
@@ -29,7 +29,7 @@ In a PEP 723 script, pin the exact version so nothing outside the script's own r
 
 ```python
 # /// script
-# dependencies = ["callva-harness-runner==0.8.0"]
+# dependencies = ["callva-harness-runner==0.9.0"]
 # ///
 ```
 
@@ -133,6 +133,40 @@ From a shell, `python -m callva.harness_runner profiles` prints the listing as J
 
 `python -m callva.harness_runner knobs` prints every knob with its type, allowed values, default and what it does on each harness; `--harness claude` or `--harness codex` shows one harness. It reads `profile.schema.json` and the docstrings on `Profile` at runtime, so it always matches the installed version.
 
+### Profiles in a store
+
+A caller can keep its profiles in its own PostgreSQL store instead of in files: the table `harness_profiles`, one row per version of a profile at one scope, `global` or `project` (with the project's id), and one active version per scope and name. The library opens no connection and adds no dependency. It ships the table as store steps; the caller applies them with its own database library, before any of its own steps that reference the table, and passes its open DB-API connection (psycopg's) to every function. A function that writes runs inside the caller's transaction, and the caller commits.
+
+```python
+from callva.harness_runner import (PROFILE_STORE_MAJOR, PROFILE_STORE_MINOR, PROFILE_STORE_OWNER,
+                                   PROFILE_STORE_STEPS, ProfileConflict, find_profile_file,
+                                   resolve_profile, run, save_profile)
+
+db.migrate(conn, PROFILE_STORE_OWNER, PROFILE_STORE_STEPS,          # your database library
+           major=PROFILE_STORE_MAJOR, minor=PROFILE_STORE_MINOR)
+
+spec = find_profile_file("builder", ["profiles"]).knobs()           # or any mapping of knobs
+try:
+    version, created = save_profile(conn, "builder", spec, scope="project", scope_id="prj_1",
+                                    created_by="kz")   # base=<the version id you read>
+    conn.commit()
+except ProfileConflict:
+    conn.rollback()                                                 # someone saved first: read again
+
+found = resolve_profile(conn, "builder", project="prj_1")
+print(found.layer, found.id)            # "project" and the version id, "global", or "shipped" and None
+result = run("...", found.profile(), cwd="/path/to/project")
+```
+
+- `PROFILE_STORE_STEPS`: the steps, `(step id, SQL)` in order, applied under the ledger `PROFILE_STORE_OWNER` (`harness`; every object they create is named `harness_*`) at version `PROFILE_STORE_MAJOR`.`PROFILE_STORE_MINOR`. The SQL names the table unqualified, so apply it with the search path on your schema.
+- `save_profile(conn, name, spec, *, scope, scope_id=None, base=None, created_by=None, schema=None) -> (StoredProfile, created)`: judges `spec` whole with `check_spec` (a `ProfileError` names the knob, an unknown key included), creates no version when `spec` equals the active one, and otherwise inserts the new version and clears `active` on the version the writer read. `ProfileConflict`, a `ProfileError`, means another writer came first, or `base` is no longer active.
+- `remove_profile(conn, name, *, scope, scope_id=None, base=None, schema=None) -> StoredProfile`: clears the active version and answers it; `ProfileNotFound` when none is active.
+- `active_profile(conn, name, *, scope, scope_id=None, schema=None, lock=False)`, `profile_version(conn, id, *, schema=None)`, `profile_history(conn, name, *, scope, scope_id=None, schema=None)` (oldest first) and `stored_profiles(conn, *, project=None, schema=None)` (the active global versions and the project's) read versions as `StoredProfile` (`id`, `scope`, `scope_id`, `name`, `spec`, `active`, `created_at`, `created_by`, with `.harness`, `.profile()`, `.text()` and `.to_dict()`).
+- `resolve_profile(conn, name, *, project=None, schema=None) -> ResolvedProfile`: the project's active version, else the global one, else the shipped profile; `ProfileNotFound` when none holds it. A `ResolvedProfile` has `name`, `layer` (`project`, `global` or `shipped`), `id` (the version that won, `None` for a shipped profile), `spec`, `shadows` (the less specific layers that also hold the name), `version`, `.profile()` and `.text()`. `resolve_among(name, active, *, project=None)` and `resolve_profiles(active, *, project=None)` do the same from versions already read with `stored_profiles`.
+- `check_spec(spec)` validates a spec without saving it; `check_profile_name(name)` refuses a name that is not one plain file-name segment, the rule both lookups use; `profile_text(spec)` writes it as the flat profile file it would be, which reads back as the same spec; `shipped_profile_names()` lists the shipped profiles.
+
+`schema`, when given, qualifies the table. The file lookup above is unchanged and reads no store; the store resolution reads no files.
+
 ### Shipped profiles
 
 The claude profiles follow the newest Opus: they name `opus`, Claude Code's alias for its newest Opus, so a newer Opus is picked up without a release. Codex has no such alias, so the codex profiles name the model family `sol`, which the runner resolves at run time to the newest listed sol model in codex's own catalog (today `gpt-6.1-sol`): a newer sol model is picked up without a release, and a catalog with no sol model fails the run rather than running another family. All run at effort `medium` with a one-hour deadline. Print one with `profiles show NAME`.
@@ -188,6 +222,16 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 `quota`, `model_refused`, `not_authenticated`, `timeout`, `cancelled`, `binary_missing`, `max_turns`, `budget`, `invalid_output`, `error`, `crash`, `incompatible_harness`. The harness's own verdict is read first (claude's result subtype, codex's `codexErrorInfo`), then an HTTP status it reports, then its sentence: a spent quota before a refused model, because a subscription spent on one model says both and only one of them is a pause. A claude turn that times out while the harness is retrying a 401 or a 429 is `not_authenticated` or `quota`. `failure.retryable` is true for the kinds where running the same turn again later can succeed.
 
 ## Changelog
+
+### 0.9.0
+
+Profiles can be kept in a store. Additive: everything in 0.8.0 works unchanged, the file lookup included.
+
+- The table `harness_profiles`, shipped as store steps a caller applies under the ledger `harness`: one row per version of a profile at the `global` or a `project` scope, one active version per scope and name.
+- `save_profile`, `remove_profile`, `active_profile`, `profile_version`, `profile_history` and `stored_profiles` on the caller's connection, inside its transaction. A save is judged whole by the profile rules, creates nothing when it is identical to the active version, and is refused with `ProfileConflict` when another writer replaced the version it read.
+- `resolve_profile`, `resolve_among` and `resolve_profiles`: a name resolves to the project's version, then the global one, then the shipped profile, and the answer names the layer and the version that won.
+- `check_spec`, `check_profile_name`, `profile_text` and `shipped_profile_names`.
+- Importing the package no longer imports either SDK; a run imports the one its harness needs.
 
 ### 0.8.0
 
