@@ -49,6 +49,7 @@ def test_defaults_send_nothing_the_profile_did_not_name(fake_env, record, tmp_pa
     assert run("x", codex(), tmp_path, environ=fake_env).ok
     [start] = requests(record, "thread/start")
     assert set(start) <= {"cwd", "approvalPolicy", "approvalsReviewer"}
+    assert "ephemeral" not in start and "baseInstructions" not in start
     [turn] = requests(record, "turn/start")
     assert "effort" not in turn and "outputSchema" not in turn
 
@@ -76,6 +77,28 @@ def test_resume_continues_the_thread_and_counts_only_this_turn(fake_env, record,
     assert resume["config"] == {"sandbox_mode": "read-only"}
     assert requests(record, "thread/start") == []
     assert again.tokens.input == 100
+
+
+def test_a_light_thread_is_ephemeral_with_its_own_base_instructions(fake_env, record, tmp_path):
+    profile = codex(system_prompt="You decide.", append_system_prompt="A", persist_session=False)
+    assert run("x", profile, tmp_path, environ=fake_env).ok
+    [start] = requests(record, "thread/start")
+    assert start["ephemeral"] is True and start["baseInstructions"] == "You decide."
+    assert start["developerInstructions"] == "A"
+
+
+def test_a_resumed_thread_keeps_the_replaced_base_instructions(fake_env, record, tmp_path):
+    first = run("x", codex(system_prompt="S"), tmp_path, environ=fake_env)
+    assert run("y", codex(system_prompt="S"), tmp_path, environ=fake_env,
+               session=Session.resume(first.session_id)).ok
+    [resume] = requests(record, "thread/resume")
+    assert resume["baseInstructions"] == "S" and "ephemeral" not in resume
+
+
+def test_a_resume_without_persistence_is_refused(fake_env, tmp_path):
+    with pytest.raises(ValueError, match="codex cannot resume a thread without persisting"):
+        run("x", codex(persist_session=False), tmp_path, environ=fake_env,
+            session=Session.resume("abc"))
 
 
 def test_a_pinned_session_is_refused(fake_env, tmp_path):

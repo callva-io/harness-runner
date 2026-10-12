@@ -51,7 +51,7 @@ def test_every_claude_knob_reaches_the_command_line(fake_env, record, tmp_path):
     assert json.loads(flag(argv, "--json-schema")) == {"type": "object"}
     assert flag(argv, "--name") == "nightly"
     assert flag(argv, "--max-turns") == "7"
-    # The system prompt is the claude_code preset: never replaced.
+    # Without system_prompt the system prompt is the claude_code preset.
     assert "--system-prompt" not in argv and "--system-prompt-file" not in argv
     assert result.command[1:] == tuple(argv)
 
@@ -65,7 +65,8 @@ def test_defaults_add_no_flags_and_keep_the_preset(fake_env, record, tmp_path):
     assert run("x", claude(), tmp_path, environ=fake_env).ok
     argv = record()["argv"]
     for name in ("--model", "--tools", "--permission-mode", "--setting-sources", "--settings",
-                 "--mcp-config", "--system-prompt", "--append-system-prompt"):
+                 "--mcp-config", "--system-prompt", "--append-system-prompt", "--thinking",
+                 "--max-turns", "--no-session-persistence"):
         assert flag(argv, name) is None and name not in argv, name
 
 
@@ -146,3 +147,20 @@ def test_a_model_name_reaches_claude_as_given(fake_env, record, tmp_path, model)
     result = run("hi", claude(model=model), tmp_path, environ=fake_env)
     assert result.ok, result.failure
     assert flag(record()["argv"], "--model") == model
+
+
+def test_a_light_turn_replaces_the_prompt_persists_nothing_and_does_not_think(
+        fake_env, record, tmp_path):
+    profile = claude(system_prompt="You decide.", thinking=False, max_turns=1,
+                     persist_session=False)
+    assert run("x", profile, tmp_path, environ=fake_env).ok
+    argv = record()["argv"]
+    assert flag(argv, "--system-prompt") == "You decide."
+    assert "--append-system-prompt" not in argv
+    assert flag(argv, "--thinking") == "disabled" and flag(argv, "--max-turns") == "1"
+    assert "--no-session-persistence" in argv
+
+
+def test_thinking_on_is_adaptive(fake_env, record, tmp_path):
+    assert run("x", claude(thinking=True), tmp_path, environ=fake_env).ok
+    assert flag(record()["argv"], "--thinking") == "adaptive"

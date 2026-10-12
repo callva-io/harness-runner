@@ -22,7 +22,7 @@ The distribution is `callva-harness-runner` and the import path is `callva.harne
 
 Both SDKs bundle a CLI, and the library never runs it: it always passes the installed CLI (`cli_path` on claude, the `app-server` launch on codex). The CLI is the profile's `cli_path`, or else the first `claude` or `codex` on the caller's `PATH`, then in the places a login shell would have added and a launchd job does not: `~/.local/bin`, fnm and nvm node directories, Homebrew. Codex is started at the file a symlinked install points to, because it finds its companion executables beside the path it was started from.
 
-Claude always runs on the `claude_code` system-prompt preset. The SDK's own default is a minimal prompt that is not Claude Code's; the preset keeps the prompt a `claude -p` turn has. Neither harness's system prompt is ever replaced; `append_system_prompt` adds to claude's and is codex's developer instructions.
+Claude runs on the `claude_code` system-prompt preset unless the profile sets `system_prompt`. The SDK's own default is a minimal prompt that is not Claude Code's; the preset keeps the prompt a `claude -p` turn has. `system_prompt` replaces the whole prompt on either harness (claude's preset, codex's base instructions), for a caller that is not a coding agent and should not pay for one's prompt; `append_system_prompt` adds to claude's preset and is codex's developer instructions. On claude the two are refused together: a replaced prompt has nothing to append to, and one knob that holds the whole text is the plainer reading. Measured on claude 2.1.296 and codex 0.162.1 with a one-word answer and a one-sentence `system_prompt`: a claude turn (haiku, no tools, no setting sources, strict MCP) took 574 prompt tokens against 3,551 on the preset, and a codex turn 10,869 input tokens against 14,383 on codex's own instructions; the rest of codex's prompt is its tool definitions and environment context, which `system_prompt` does not reach.
 
 Codex's turn is read from the turn's notification stream, not from `thread.run()`, which raises on a failed turn and drops `codexErrorInfo`.
 
@@ -30,7 +30,7 @@ Codex's turn is read from the turn's notification stream, not from `thread.run()
 
 A `Profile` is a frozen, flat record of explicit knobs. There is no inheritance and no named fence. A knob at its default leaves the harness's own default in place. A knob one harness cannot honour is refused for that harness when the profile is built, with a `ProfileError` naming the knob; it is never ignored while the turn runs. Each knob's docstring on `Profile` is the home of what it does on each harness, and the README carries the same table for readers of the package page.
 
-The knobs: `harness`, `cli_path`, `model`, `effort`, `timeout_seconds`, `budget_usd`; `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `setting_sources`; `settings`, `mcp_config`, `strict_mcp`; `add_dirs`, `append_system_prompt`, `output_schema`, `name`; `env_set`, `env_remove`, `strip_session_markers`; `codex_config`, `approval_policy`, `service_tier`, `bypass_hook_trust`; `claude_extra_args`, `codex_extra_args`.
+The knobs: `harness`, `cli_path`, `model`, `effort`, `thinking`, `max_turns`, `timeout_seconds`, `budget_usd`; `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `setting_sources`; `settings`, `mcp_config`, `strict_mcp`; `add_dirs`, `system_prompt`, `append_system_prompt`, `output_schema`, `name`, `persist_session`; `env_set`, `env_remove`, `strip_session_markers`; `codex_config`, `approval_policy`, `service_tier`, `bypass_hook_trust`; `claude_extra_args`, `codex_extra_args`.
 
 `Profile.from_dict()` validates against `profile.schema.json`, which ships in the package so that every consumer's configuration file is checked by the same rule. Unknown keys are refused, and the 0.1.x keys (`fence`, `allow_tools`, `env`, `extra_args`) are refused with a message naming the knobs that replace them.
 
@@ -66,11 +66,13 @@ A name resolves to the most specific layer holding an active version: the projec
 
 ## 5. Session
 
-`Session.fresh()` starts a new conversation. On claude the library generates the id before launch and pins it, so a turn that is killed is still addressable. On codex the id is the thread id the app-server gives, reported even when the turn is later killed. `Session.pinned(id)` lets the caller choose the id; it is claude-only and refused on codex. `Session.resume(id)` continues an existing conversation on either harness; on codex the thread is resumed with the profile's model, config, developer instructions, service tier and approval policy.
+`Session.fresh()` starts a new conversation. On claude the library generates the id before launch and pins it, so a turn that is killed is still addressable. On codex the id is the thread id the app-server gives, reported even when the turn is later killed. `Session.pinned(id)` lets the caller choose the id; it is claude-only and refused on codex. `Session.resume(id)` continues an existing conversation on either harness; on codex the thread is resumed with the profile's model, config, base and developer instructions, service tier and approval policy.
+
+`persist_session = false` writes the turn's session nowhere, so it appears in neither harness's session list and cannot be resumed: claude runs with `--no-session-persistence`, and codex starts the thread ephemeral. Claude can still resume a persisted session under it and writes nothing back to it; codex can make only a new thread ephemeral, so `Session.resume` with persistence off is refused on codex with a `ValueError`, as a pinned session is.
 
 ## 6. Harness guard
 
-`TESTED_VERSIONS` declares, per harness, the inclusive range of CLI versions the release was tested with: the low end is the CLI installed where the release was tested, the high end is the CLI the pinned SDK bundles. Before every turn the installed CLI's `--version` is read (cached per binary file):
+`TESTED_VERSIONS` declares, per harness, the inclusive range of CLI versions the release was tested with: the low end is the CLI installed where the release was tested, the high end is the newer of the CLI the pinned SDK bundles and an installed CLI a live run of the release passed on. Before every turn the installed CLI's `--version` is read (cached per binary file):
 
 - below the range, or unreadable: the turn is refused with `incompatible_harness`, naming both versions;
 - above the range: the turn runs and `Result.warnings` names both versions;

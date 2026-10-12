@@ -121,9 +121,10 @@ def resolve_model(client: Codex, family: str) -> str:
     return slug
 
 
-def thread_options(profile: Profile, *, cwd: str, model: str | None = None) -> dict[str, Any]:
-    """The keyword arguments of `thread_start` and `thread_resume` a profile sets; `model`, when
-    given, is the slug a family resolved to."""
+def thread_options(profile: Profile, *, cwd: str, model: str | None = None,
+                   resume: bool = False) -> dict[str, Any]:
+    """The keyword arguments of `thread_start`, or of `thread_resume` when `resume`, a profile
+    sets; `model`, when given, is the slug a family resolved to."""
     opts: dict[str, Any] = {"cwd": cwd}
     if model or profile.model:
         opts["model"] = model or profile.model
@@ -137,8 +138,13 @@ def thread_options(profile: Profile, *, cwd: str, model: str | None = None) -> d
         config["projects"] = {**dict(config.get("projects") or {}), **trusted_projects(cwd)}
     if config:
         opts["config"] = config
+    if profile.system_prompt is not None:
+        opts["base_instructions"] = profile.system_prompt
     if profile.append_system_prompt:
         opts["developer_instructions"] = profile.append_system_prompt
+    if not profile.persist_session and not resume:
+        # Only a new thread can be ephemeral; `run` refuses a resume with persistence off.
+        opts["ephemeral"] = True
     if profile.service_tier:
         opts["service_tier"] = profile.service_tier
     if profile.approval_policy:
@@ -196,7 +202,7 @@ def run_turn(
         on_client(client)
         if is_family(profile.model):
             outcome.model = resolve_model(client, profile.model)
-        opts = thread_options(profile, cwd=cwd, model=outcome.model)
+        opts = thread_options(profile, cwd=cwd, model=outcome.model, resume=bool(resume_id))
         if resume_id:
             thread: Thread = client.thread_resume(resume_id, **opts)
         else:

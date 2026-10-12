@@ -173,6 +173,10 @@ def run(
     harness = profile.harness
     if harness == "codex" and session.kind == "pinned":
         raise ValueError("codex cannot pin a thread id; use Session.fresh() or Session.resume(id)")
+    if harness == "codex" and session.kind == "resume" and not profile.persist_session:
+        raise ValueError(
+            "codex cannot resume a thread without persisting it: a resumed thread is already "
+            "persisted; use Session.fresh() or a profile with persist_session")
     base = dict(os.environ if environ is None else environ)
     binary = profile.cli_path or find_binary(harness, base)
     if not binary or not os.access(binary, os.X_OK):

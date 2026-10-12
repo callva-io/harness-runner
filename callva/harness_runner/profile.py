@@ -94,6 +94,15 @@ class Profile:
     """Claude: `--effort` (`low`, `medium`, `high`, `xhigh`, `max`). Codex: the turn's reasoning
     effort (`minimal` to `xhigh` and what that codex build adds)."""
 
+    thinking: bool | None = None
+    """Claude: `--thinking`; false turns extended thinking off for the turn, true makes it
+    adaptive, `None` leaves Claude Code's default. Codex: refused; codex's reasoning is set by
+    `effort`."""
+
+    max_turns: int | None = None
+    """Claude: `--max-turns`; the harness ends the turn after that many agentic turns, a
+    `max_turns` failure. Codex: refused; codex has no turn cap."""
+
     timeout_seconds: float = 600.0
     """Both: the deadline for the whole turn. When it passes the harness and every process it
     started are killed, grandchildren included, and the turn is a `timeout` failure."""
@@ -139,10 +148,17 @@ class Profile:
     """Claude: `--add-dir` per entry, directories the file tools may reach beyond the working
     directory. Codex: refused; give a directory access in the permissions of `codex_config`."""
 
+    system_prompt: str | None = None
+    """Both: the whole system prompt of the turn, in place of the harness's own, for a caller
+    that is not a coding agent. `None` keeps the harness's own. Claude: `--system-prompt`, in
+    place of the `claude_code` preset; refused together with `append_system_prompt`, since a
+    replaced prompt has nothing to append to. Codex: the thread's base instructions, in place
+    of codex's own, on start and on resume."""
+
     append_system_prompt: str | None = None
-    """Neither harness's system prompt is ever replaced. Claude: appended to the Claude Code
-    system prompt, which is always kept. Codex: the thread's developer instructions, added
-    beside codex's own instructions."""
+    """Claude: appended to the Claude Code system prompt (the `claude_code` preset). Codex: the
+    thread's developer instructions, added beside codex's instructions (its own, or
+    `system_prompt`)."""
 
     output_schema: Mapping[str, Any] | None = None
     """Both: a JSON schema the final answer must satisfy (claude `--json-schema`, codex turn
@@ -151,6 +167,13 @@ class Profile:
 
     name: str | None = None
     """Claude: `--name`, the session's display name. Codex: the thread's name."""
+
+    persist_session: bool = True
+    """Both: false runs the turn without writing its session anywhere, so it is in neither
+    harness's session list and cannot be resumed. Claude: `--no-session-persistence`; a
+    resumed session is read and nothing is written back to it. Codex: the thread is started
+    ephemeral; a resumed thread is already persisted, so `Session.resume` with this off is
+    refused."""
 
     env_set: Mapping[str, str] = field(default_factory=dict)
     """Both: variables set in the harness's environment, over what it inherits."""
@@ -257,6 +280,7 @@ Profile.__init__ = _init  # type: ignore[method-assign]
 _CLAUDE_ONLY = (
     "budget_usd", "tools", "allowed_tools", "disallowed_tools", "permission_mode",
     "setting_sources", "settings", "mcp_config", "strict_mcp", "add_dirs", "claude_extra_args",
+    "thinking", "max_turns",
 )
 _CODEX_ONLY = ("codex_config", "approval_policy", "service_tier", "codex_extra_args")
 
@@ -268,7 +292,8 @@ def _refuse_for_harness(profile: Profile) -> None:
         value = getattr(profile, name)
         # An empty `tools` tuple is a real claude setting (no built-in tools), so a
         # tuple counts as set whenever it is not None for that one knob.
-        is_set = value is not None if name == "tools" else bool(value)
+        # `thinking` is a choice either way, so false is as set as true.
+        is_set = value is not None if name in ("tools", "thinking") else bool(value)
         if is_set:
             raise ProfileError(
                 f"profile.{name}: {harness} cannot honour it; it is a "
@@ -276,6 +301,11 @@ def _refuse_for_harness(profile: Profile) -> None:
             )
     if profile.bypass_hook_trust and harness == "claude":
         raise ProfileError("profile.bypass_hook_trust: claude has no hook trust to bypass")
+    if harness == "claude" and profile.system_prompt is not None and profile.append_system_prompt:
+        raise ProfileError(
+            "profile.append_system_prompt: claude replaces its system prompt with system_prompt, "
+            "so there is nothing to append to; put the text in system_prompt"
+        )
     overlap = [name for name in profile.env_set if _matches(name, profile.env_remove)]
     if overlap:
         raise ProfileError(

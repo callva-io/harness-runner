@@ -30,13 +30,18 @@ def options(
     resume_id: str | None,
     stderr: Callable[[str], None],
 ) -> ClaudeAgentOptions:
-    """The SDK options for one turn. The system prompt is always the claude_code preset."""
-    system_prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
-    if profile.append_system_prompt:
+    """The SDK options for one turn. The system prompt is the claude_code preset unless the
+    profile replaces it."""
+    system_prompt: dict[str, Any] | str = {"type": "preset", "preset": "claude_code"}
+    if profile.system_prompt is not None:
+        system_prompt = profile.system_prompt
+    elif profile.append_system_prompt:
         system_prompt["append"] = profile.append_system_prompt
     extra: dict[str, str | None] = dict(profile.claude_extra_args)
     if profile.name:
         extra["name"] = profile.name
+    if not profile.persist_session:
+        extra["no-session-persistence"] = None
     settings = profile.settings
     if isinstance(settings, dict):
         settings = json.dumps(settings)
@@ -49,6 +54,9 @@ def options(
         system_prompt=system_prompt,
         model=profile.model,
         effort=profile.effort,
+        thinking=(None if profile.thinking is None
+                  else {"type": "adaptive"} if profile.thinking else {"type": "disabled"}),
+        max_turns=profile.max_turns,
         max_budget_usd=profile.budget_usd,
         tools=list(profile.tools) if profile.tools is not None else None,
         allowed_tools=list(profile.allowed_tools),

@@ -17,11 +17,11 @@ from .binaries import version_line
 
 # The inclusive range of CLI versions this release was tested with, per harness.
 # The low end is the CLI installed where the release was tested; the high end
-# is the CLI the pinned SDK bundles, which is what that SDK release was built
-# against.
+# is the newer of the CLI the pinned SDK bundles, which is what that SDK release
+# was built against, and an installed CLI a live run of this release passed on.
 TESTED_VERSIONS: dict[str, tuple[str, str]] = {
-    "claude": ("2.1.280", "2.1.284"),
-    "codex": ("0.159.0", "0.159.0"),
+    "claude": ("2.1.280", "2.1.296"),
+    "codex": ("0.159.0", "0.162.1"),
 }
 
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")

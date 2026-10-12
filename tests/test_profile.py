@@ -15,7 +15,7 @@ CLAUDE_ONLY = {
     "budget_usd": 1.0, "tools": ["Read"], "allowed_tools": ["Read"], "disallowed_tools": ["Edit"],
     "permission_mode": "plan", "setting_sources": ["project"], "settings": {"a": 1},
     "mcp_config": {"mcpServers": {}}, "strict_mcp": True, "add_dirs": ["/tmp"],
-    "claude_extra_args": {"x": None},
+    "claude_extra_args": {"x": None}, "thinking": True, "max_turns": 1,
 }
 CODEX_ONLY = {
     "codex_config": {"sandbox_mode": "read-only"}, "approval_policy": "never",
@@ -83,6 +83,24 @@ def test_hook_trust_bypass_is_a_codex_knob_refused_on_claude():
     assert Profile(harness="codex", bypass_hook_trust=True).bypass_hook_trust is True
     with pytest.raises(ProfileError, match="claude has no hook trust"):
         Profile(harness="claude", bypass_hook_trust=True)
+
+
+def test_thinking_off_is_a_claude_setting():
+    assert Profile(harness="claude", thinking=False).thinking is False
+    with pytest.raises(ProfileError, match=r"profile\.thinking: codex cannot honour it"):
+        Profile(harness="codex", thinking=False)
+
+
+def test_a_replaced_system_prompt_takes_no_append_on_claude():
+    with pytest.raises(ProfileError, match=r"profile\.append_system_prompt: claude replaces"):
+        Profile(harness="claude", system_prompt="S", append_system_prompt="A")
+    both = Profile(harness="codex", system_prompt="S", append_system_prompt="A")
+    assert (both.system_prompt, both.append_system_prompt) == ("S", "A")
+
+
+def test_a_turn_cap_is_at_least_one():
+    with pytest.raises(ProfileError, match=r"profile\.max_turns: must be at least 1"):
+        Profile(harness="claude", max_turns=0)
 
 
 def test_fence_key_is_refused_with_the_knobs_that_replace_it():

@@ -67,6 +67,8 @@ A profile is a flat set of explicit knobs. There is no inheritance and no fence.
 | `cli_path` | the CLI the SDK launches; `None` finds the installed `claude` | the binary whose `app-server` the SDK talks to; `None` finds the installed `codex` |
 | `model` | `--model`, as given | the thread's model; a family name of lowercase letters only (`sol`) runs the newest listed `gpt-<version>-<family>` model in codex's catalog, and fails the run when there is none; any other value is a literal slug |
 | `effort` | `--effort` | the turn's reasoning effort |
+| `thinking` | `--thinking`: `false` turns extended thinking off, `true` makes it adaptive; `None` is Claude Code's default | refused: reasoning is set by `effort` |
+| `max_turns` | `--max-turns`; the turn ends as a `max_turns` failure after that many agentic turns | refused: codex has no turn cap |
 | `timeout_seconds` | the deadline; default 600 | the same |
 | `budget_usd` | `--max-budget-usd` | refused: codex reports no cost |
 | `tools` | `--tools`, the built-in tools that exist; `[]` removes them all | refused |
@@ -78,9 +80,11 @@ A profile is a flat set of explicit knobs. There is no inheritance and no fence.
 | `mcp_config` | `--mcp-config`, `{"mcpServers": {...}}` or a path | refused: `mcp_servers` in `codex_config` |
 | `strict_mcp` | `--strict-mcp-config` | refused |
 | `add_dirs` | `--add-dir` per entry | refused: give the directory access in `codex_config` permissions |
+| `system_prompt` | `--system-prompt`, the whole system prompt in place of the `claude_code` preset; refused with `append_system_prompt` | the thread's base instructions, in place of codex's own, on start and resume |
 | `append_system_prompt` | appended to the Claude Code system prompt | the thread's developer instructions |
 | `output_schema` | `--json-schema` | the turn's output schema |
 | `name` | `--name` | the thread's name |
+| `persist_session` | `false`: `--no-session-persistence`, the turn is saved nowhere; a resumed session is read and not written | `false`: the thread is started ephemeral, saved nowhere; `Session.resume` is refused |
 | `env_set` | set in the harness's environment | the same |
 | `env_remove` | names or globs removed from what the harness inherits | the same |
 | `strip_session_markers` | also remove `SESSION_MARKERS`; default true | the same |
@@ -91,7 +95,19 @@ A profile is a flat set of explicit knobs. There is no inheritance and no fence.
 | `claude_extra_args` | extra CLI flags, `{"flag": "value"}` or `{"flag": None}` | refused |
 | `codex_extra_args` | refused | arguments before `app-server`, such as `["-c", "key=value"]` |
 
-Claude always runs on the `claude_code` system-prompt preset, so a turn has the same prompt `claude -p` has; the library never replaces either harness's system prompt, and `append_system_prompt` only adds to it.
+By default claude runs on the `claude_code` system-prompt preset, so a turn has the same prompt `claude -p` has, and codex on its own instructions; `append_system_prompt` adds to either. A caller that is not a coding agent, such as a classifier deciding whether a message needs an answer, replaces the prompt with `system_prompt` and usually sets `persist_session = false` as well, so its turns fill no session list:
+
+```toml
+harness = "claude"
+model = "haiku"
+system_prompt = "You decide whether the message needs a reply."
+thinking = false
+max_turns = 1
+tools = []
+setting_sources = []
+strict_mcp = true
+persist_session = false
+```
 
 ### Profiles by name
 
@@ -185,7 +201,7 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 
 ## Harness guard
 
-`TESTED_VERSIONS` holds, per harness, the range of CLI versions this release was tested with: claude 2.1.280 to 2.1.284, codex 0.159.0. Before a turn the library reads the installed CLI's `--version`:
+`TESTED_VERSIONS` holds, per harness, the range of CLI versions this release was tested with: claude 2.1.280 to 2.1.296, codex 0.159.0 to 0.162.1. Before a turn the library reads the installed CLI's `--version`:
 
 - older than the range: the turn is refused with failure kind `incompatible_harness`, and the message names the installed version and the tested one;
 - newer than the range: the turn runs, and `result.warnings` names both versions;
