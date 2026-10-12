@@ -65,6 +65,16 @@ def test_environ_is_the_base_and_extra_env_goes_on_top(fake_env, record, tmp_pat
     assert env["FROM_PROFILE"] == "p" and env["FROM_CALL"] == "c"
 
 
+def test_a_codex_home_of_its_own_reaches_the_app_server(fake_env, record, tmp_path, parent):
+    # A run that must not read the user's codex configuration sets its own CODEX_HOME,
+    # which wins over the one in the caller's environment.
+    home = str(tmp_path / "codex-home")
+    profile = Profile(harness="codex", cli_path=fake("codex"), env_set={"CODEX_HOME": home})
+    base = {**os.environ, **fake_env, "CODEX_HOME": str(tmp_path / "user-home")}
+    assert run("x", profile, tmp_path, environ=base).ok
+    assert record()["env"]["CODEX_HOME"] == home
+
+
 def test_the_launcher_never_learns_a_value():
     plan = plan_env(inherited={"A": "1", "SECRET": "x"}, wanted_base={"A": "2"},
                     set_env={"B": "3"}, remove_patterns=SESSION_MARKERS)

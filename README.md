@@ -109,6 +109,16 @@ strict_mcp = true
 persist_session = false
 ```
 
+On codex the same caller also gives the run a codex home of its own, because the app-server has no switch that skips the user's `~/.codex/config.toml`: under its own `CODEX_HOME` the run reads no user settings, MCP servers, plugins, skills, hooks or personal instructions. The home needs its own login, made once with `CODEX_HOME=<dir> codex login`; until then a turn there fails `not_authenticated`.
+
+```toml
+harness = "codex"
+model = "luna"
+system_prompt = "You decide whether the message needs a reply."
+persist_session = false
+env_set = { CODEX_HOME = "/path/to/a/codex/home/of/its/own" }
+```
+
 ### Profiles by name
 
 A profile file holds one profile, so one harness: flat TOML with a required top-level `harness = "claude"` or `harness = "codex"` and that harness's knobs beside it. A knob that is an object, such as `settings` or `codex_config`, may be written as a TOML table. A file with a `[claude]` or `[codex]` table, or without a top-level `harness`, is refused with a `ProfileError` that names this form.
@@ -238,6 +248,16 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 `quota`, `model_refused`, `not_authenticated`, `timeout`, `cancelled`, `binary_missing`, `max_turns`, `budget`, `invalid_output`, `error`, `crash`, `incompatible_harness`. The harness's own verdict is read first (claude's result subtype, codex's `codexErrorInfo`), then an HTTP status it reports, then its sentence: a spent quota before a refused model, because a subscription spent on one model says both and only one of them is a pause. A claude turn that times out while the harness is retrying a 401 or a 429 is `not_authenticated` or `quota`. `failure.retryable` is true for the kinds where running the same turn again later can succeed.
 
 ## Changelog
+
+### 0.10.0
+
+A profile can run a light turn for a caller that is not a coding agent. Additive: everything in 0.9.0 works unchanged, the shipped profiles included.
+
+- `system_prompt` replaces the whole system prompt: claude's `claude_code` preset (`--system-prompt`, refused together with `append_system_prompt`) or codex's base instructions.
+- `persist_session = false` saves the turn nowhere: claude `--no-session-persistence`, codex an ephemeral thread; `Session.resume` with it off is refused on codex.
+- `thinking` (claude `--thinking`, `false` turns it off) and `max_turns` (claude `--max-turns`); both refused on codex.
+- A codex run that must not read the user's codex configuration gets a codex home of its own through `env_set` (`CODEX_HOME`), documented with its login requirement.
+- The tested CLI range reaches claude 2.1.296 and codex 0.162.1.
 
 ### 0.9.0
 
