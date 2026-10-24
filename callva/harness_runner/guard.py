@@ -20,7 +20,7 @@ from .binaries import version_line
 # is the newer of the CLI the pinned SDK bundles, which is what that SDK release
 # was built against, and an installed CLI a live run of this release passed on.
 TESTED_VERSIONS: dict[str, tuple[str, str]] = {
-    "claude": ("2.1.280", "2.1.296"),
+    "claude": ("2.1.280", "2.1.310"),
     "codex": ("0.159.0", "0.162.1"),
 }
 

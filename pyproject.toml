@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["claude-agent-sdk==0.2.161", "openai-codex==0.159.0"]
+dependencies = ["claude-agent-sdk==0.2.174", "openai-codex==0.159.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]

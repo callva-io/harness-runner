@@ -23,7 +23,7 @@ Formerly `callva-agentworker`, whose last release is 0.2.0. The 0.3.0 renames, w
 pip install callva-harness-runner
 ```
 
-It depends on `claude-agent-sdk==0.2.161` and `openai-codex==0.159.0`, pinned exactly; together they add about 0.5 GB, most of it the CLIs both SDKs bundle. The bundled CLIs are never run: the library always runs the CLI installed on the machine.
+It depends on `claude-agent-sdk==0.2.174` and `openai-codex==0.159.0`, pinned exactly; together they add about 0.5 GB, most of it the CLIs both SDKs bundle. The bundled CLIs are never run: the library always runs the CLI installed on the machine.
 
 In a PEP 723 script, pin the exact version so nothing outside the script's own release changes what it runs:
 
@@ -211,7 +211,7 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 
 ## Harness guard
 
-`TESTED_VERSIONS` holds, per harness, the range of CLI versions this release was tested with: claude 2.1.280 to 2.1.296, codex 0.159.0 to 0.162.1. Before a turn the library reads the installed CLI's `--version`:
+`TESTED_VERSIONS` holds, per harness, the range of CLI versions this release was tested with: claude 2.1.280 to 2.1.310, codex 0.159.0 to 0.162.1. Before a turn the library reads the installed CLI's `--version`:
 
 - older than the range: the turn is refused with failure kind `incompatible_harness`, and the message names the installed version and the tested one;
 - newer than the range: the turn runs, and `result.warnings` names both versions;
@@ -248,6 +248,13 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 `quota`, `model_refused`, `not_authenticated`, `timeout`, `cancelled`, `binary_missing`, `max_turns`, `budget`, `invalid_output`, `error`, `crash`, `incompatible_harness`. The harness's own verdict is read first (claude's result subtype, codex's `codexErrorInfo`), then an HTTP status it reports, then its sentence: a spent quota before a refused model, because a subscription spent on one model says both and only one of them is a pause. A claude turn that times out while the harness is retrying a 401 or a 429 is `not_authenticated` or `quota`. `failure.retryable` is true for the kinds where running the same turn again later can succeed.
 
 ## Changelog
+
+### 0.10.1
+
+Claude runs through `claude-agent-sdk` 0.2.174, which bundles Claude Code 2.1.310, in place of 0.2.161. Nothing a profile or a result does changes.
+
+- The tested claude range reaches 2.1.310; a live run of this release passed on claude 2.1.308 and 2.1.310.
+- Codex is unchanged: `openai-codex` 0.159.0, tested codex 0.159.0 to 0.162.1.
 
 ### 0.10.0
 
