@@ -161,7 +161,7 @@ From a shell, `python -m callva.harness_runner profiles` prints the listing as J
 
 ### Profiles in a store
 
-A caller can keep its profiles in its own PostgreSQL store instead of in files: the table `harness_profiles`, one row per version of a profile at one scope, `global` or `project` (with the project's id), and one active version per scope and name. The library opens no connection and adds no dependency. It ships the table as store steps; the caller applies them with its own database library, before any of its own steps that reference the table, and passes its open DB-API connection (psycopg's) to every function. A function that writes runs inside the caller's transaction, and the caller commits.
+A caller can keep its profiles in its own PostgreSQL store instead of in files: the table `harness_profile_versions`, one row per version of a profile at one scope, `global` or `project` (with the agent's id), kept in one nullable column `agent_id` (null for a global version), and one active version per scope and name. The library opens no connection and adds no dependency. It ships the table as store steps; the caller applies them with its own database library, before any of its own steps that reference the table, and passes its open DB-API connection (psycopg's) to every function. A function that writes runs inside the caller's transaction, and the caller commits.
 
 ```python
 from callva.harness_runner import (PROFILE_STORE_MAJOR, PROFILE_STORE_MINOR, PROFILE_STORE_OWNER,
@@ -248,6 +248,13 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 `quota`, `model_refused`, `not_authenticated`, `timeout`, `cancelled`, `binary_missing`, `max_turns`, `budget`, `invalid_output`, `error`, `crash`, `incompatible_harness`. The harness's own verdict is read first (claude's result subtype, codex's `codexErrorInfo`), then an HTTP status it reports, then its sentence: a spent quota before a refused model, because a subscription spent on one model says both and only one of them is a pause. A claude turn that times out while the harness is retrying a 401 or a 429 is `not_authenticated` or `quota`. `failure.retryable` is true for the kinds where running the same turn again later can succeed.
 
 ## Changelog
+
+### 0.11.0
+
+The store table is renamed for the agent naming of the store, at store version 2.0. The Python API is unchanged: `scope`, `scope_id` and every `StoredProfile` field and `to_dict` key stay as they were.
+
+- `harness_profiles` is `harness_profile_versions`, and its `scope` and `scope_id` are one nullable `agent_id`: null for a global version, else the agent's id, which the API still reads and writes as `scope="project"` with `scope_id`. The primary key, the not-null constraints and both indexes take the new table's name.
+- One new step, `0002-profile-versions`, takes a store at 1.0 to 2.0 in place and keeps every version. `PROFILE_STORE_MAJOR` is 2: a caller on 0.10 meets a store at 2.0 as too new and must update, and a 0.11 caller migrates a store at 1.0.
 
 ### 0.10.1
 

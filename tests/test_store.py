@@ -182,12 +182,14 @@ def test_the_store_holds_one_active_version_per_scope_and_name(conn):
     save_profile(conn, "builder", SPEC, scope="global")
     conn.commit()
     with pytest.raises(psycopg.errors.UniqueViolation):
-        conn.execute("insert into harness_profiles (scope, scope_id, name, spec) "
-                     "values ('global', null, 'builder', '{}'::jsonb)")
+        conn.execute("insert into harness_profile_versions (agent_id, name, spec) "
+                     "values (null, 'builder', '{}'::jsonb)")
     conn.rollback()
-    with pytest.raises(psycopg.errors.CheckViolation):
-        conn.execute("insert into harness_profiles (scope, scope_id, name, spec) "
-                     "values ('global', 'prj_a', 'other', '{}'::jsonb)")
+    save_profile(conn, "builder", SPEC, scope="project", scope_id="prj_a")
+    conn.commit()
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute("insert into harness_profile_versions (agent_id, name, spec) "
+                     "values ('prj_a', 'builder', '{}'::jsonb)")
     conn.rollback()
 
 
@@ -224,3 +226,58 @@ def test_removing_keeps_the_history_and_the_name_falls_through_to_the_next_layer
         remove_profile(conn, "claude-read", scope="global")
     conn.rollback()
     assert len(profile_history(conn, "claude-read", scope="global")) == 1
+
+
+def test_a_store_at_major_1_keeps_every_version_under_the_agent_names(conn):
+    """A store holding the 1.0 table, with versions in it, takes the 2.0 step in
+    place: every row stays, `scope`/`scope_id` become one nullable `agent_id`, and
+    nothing in the schema is still named for `harness_profiles`."""
+    from callva.harness_runner import PROFILE_STORE_MAJOR, PROFILE_STORE_MINOR
+    assert (PROFILE_STORE_MAJOR, PROFILE_STORE_MINOR) == (2, 0)
+    assert [step for step, _ in PROFILE_STORE_STEPS][:1] == ["0001-profiles"]
+    conn.execute("drop schema if exists harness_m1 cascade")
+    conn.execute("create schema harness_m1")
+    conn.execute("set search_path to harness_m1")
+    conn.execute(PROFILE_STORE_STEPS[0][1])
+    conn.execute("insert into harness_profiles "
+                 "(id, scope, scope_id, name, spec, active, created_by) values "
+                 "('00000000-0000-0000-0000-000000000001', 'global', null, 'builder', "
+                 "'{\"harness\": \"claude\", \"model\": \"g1\"}', false, 'kz'), "
+                 "('00000000-0000-0000-0000-000000000002', 'global', null, 'builder', "
+                 "'{\"harness\": \"claude\", \"model\": \"g2\"}', true, null), "
+                 "('00000000-0000-0000-0000-000000000003', 'project', 'prj_a', 'builder', "
+                 "'{\"harness\": \"claude\", \"model\": \"a\"}', true, 'kz')")
+    for _step, sql in PROFILE_STORE_STEPS[1:]:
+        conn.execute(sql)
+    rows = conn.execute("select id::text, agent_id, name, spec->>'model', active, created_by "
+                        "from harness_profile_versions order by id").fetchall()
+    assert rows == [("00000000-0000-0000-0000-000000000001", None, "builder", "g1", False, "kz"),
+                    ("00000000-0000-0000-0000-000000000002", None, "builder", "g2", True, None),
+                    ("00000000-0000-0000-0000-000000000003", "prj_a", "builder", "a", True, "kz")]
+    columns = [r[0] for r in conn.execute(
+        "select column_name from information_schema.columns where table_schema = 'harness_m1' "
+        "order by ordinal_position").fetchall()]
+    assert "scope" not in columns and "scope_id" not in columns and "agent_id" in columns
+    names = [r[0] for r in conn.execute(
+        "select relname from pg_class c join pg_namespace n on n.oid = c.relnamespace "
+        "where n.nspname = 'harness_m1' union all "
+        "select conname from pg_constraint c join pg_namespace n on n.oid = c.connamespace "
+        "where n.nspname = 'harness_m1'").fetchall()]
+    assert names and all(n.startswith("harness_profile_versions") for n in names), names
+    assert not [n for n in names if "scope" in n or "project" in n], names
+    said = conn.execute("select string_agg(coalesce(d.description, ''), ' ') from pg_description d "
+                        "where d.objoid = 'harness_profile_versions'::regclass").fetchone()[0]
+    assert "project" not in said and "scope" not in said, said
+    mine = resolve_profile(conn, "builder", project="prj_a")
+    assert (mine.layer, mine.id, mine.version.scope, mine.version.scope_id) == (
+        "project", "00000000-0000-0000-0000-000000000003", "project", "prj_a")
+    everyone = resolve_profile(conn, "builder")
+    assert (everyone.layer, everyone.version.to_dict()["scope"],
+            everyone.version.to_dict()["scope_id"]) == ("global", "global", None)
+    history = profile_history(conn, "builder", scope="global")
+    assert [(v.spec["model"], v.active, v.created_by) for v in history] == [
+        ("g1", False, "kz"), ("g2", True, None)]
+    again, created = save_profile(conn, "builder", {"harness": "claude", "model": "a2"},
+                                  scope="project", scope_id="prj_a", base=mine.id)
+    assert created and again.scope == "project" and again.scope_id == "prj_a"
+    conn.rollback()
