@@ -1,9 +1,11 @@
 """Profiles kept in a store, as versions, resolved by scope.
 
-The table is `harness_profiles`: one row is one version of a profile at one
-scope, `global` or `project` (with the project's id), and exactly one version of
-a name is active per scope. `spec` is the whole profile, `harness` included, in
-the shape `Profile.from_dict` takes and validated whole on every save.
+The table is `harness_profile_versions`: one row is one version of a profile at
+one scope, `global` or `project`, kept as one nullable `agent_id` (NULL for a
+global version, else the agent's id, which the API calls `scope_id`), and
+exactly one version of a name is active per scope. `spec` is the whole profile,
+`harness` included, in the shape `Profile.from_dict` takes and validated whole
+on every save.
 
 The library opens no connection and runs no migration of its own. The caller
 applies `PROFILE_STORE_STEPS` under the ledger `PROFILE_STORE_OWNER` at
@@ -40,7 +42,7 @@ PROFILE_STORE_OWNER = "harness"
 """The ledger the steps are applied under: every object they create is named
 `harness_*`."""
 
-PROFILE_STORE_MAJOR = 1
+PROFILE_STORE_MAJOR = 2
 PROFILE_STORE_MINOR = 0
 
 SCOPES = ("project", "global")
@@ -90,8 +92,56 @@ create index if not exists harness_profiles_name_idx
   on harness_profiles (scope, scope_id, name, created_at);
 """
 
+_PROFILE_VERSIONS = r"""
+alter table harness_profiles rename to harness_profile_versions;
+alter table harness_profile_versions drop constraint harness_profiles_scope_id_check;
+alter table harness_profile_versions drop constraint harness_profiles_scope_check;
+drop index harness_profiles_one_active_idx;
+drop index harness_profiles_name_idx;
+alter table harness_profile_versions drop column scope;
+alter table harness_profile_versions rename column scope_id to agent_id;
+
+-- Every constraint still named for the old table - the primary key and, where the
+-- server names them, the not-null constraints - takes the new table's name; a
+-- primary key's index is renamed with it.
+do $rename$
+declare
+  one record;
+begin
+  for one in
+    select c.conname from pg_constraint c
+    where c.conrelid = 'harness_profile_versions'::regclass
+      and c.conname like 'harness\_profiles\_%'
+  loop
+    execute format('alter table harness_profile_versions rename constraint %I to %I',
+                   one.conname,
+                   'harness_profile_versions_'
+                     || substr(one.conname, length('harness_profiles_') + 1));
+  end loop;
+end
+$rename$;
+
+comment on table harness_profile_versions is
+  'One row is one version of a callva-harness-runner profile, global or of one agent. '
+  'A change never edits a row: it inserts a new version and clears active on the version '
+  'the writer read, in one transaction. History is every version of a name by created_at; '
+  'a name with no active version is not held there.';
+comment on column harness_profile_versions.agent_id is
+  'The agent''s id for a version of that agent; NULL for a global version. A name resolves '
+  'to the agent''s version, then the global one, then the profile the library ships.';
+
+-- One active version of a name per agent and one global, enforced by the store
+-- rather than by every writer agreeing. Nulls are distinct in a unique index, so
+-- the index keys on agent_id with null read as ''.
+create unique index harness_profile_versions_one_active_idx
+  on harness_profile_versions (coalesce(agent_id, ''), name) where active;
+create index harness_profile_versions_name_idx
+  on harness_profile_versions (agent_id, name, created_at);
+"""
+
 PROFILE_STORE_STEPS: tuple[tuple[str, str], ...] = (
     ("0001-profiles", _PROFILES_TABLE),
+    ("0002-profile-versions", _PROFILE_VERSIONS),
 )
 """The store steps, `(step id, SQL)`, in order. An applied step is never edited;
 a change to the table is a new step and a new version."""
@@ -107,10 +157,10 @@ _SCHEMA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,62}")
 
 def _table(schema: str | None) -> str:
     if schema is None:
-        return "harness_profiles"
+        return "harness_profile_versions"
     if not isinstance(schema, str) or not _SCHEMA_NAME.fullmatch(schema):
         raise ValueError(f"schema {schema!r} is not a plain identifier")
-    return f'"{schema}".harness_profiles'
+    return f'"{schema}".harness_profile_versions'
 
 
 def _scope(scope: str, scope_id: str | None) -> tuple[str, str | None]:
@@ -262,11 +312,15 @@ def _version(record: Mapping[str, Any]) -> StoredProfile:
                          created_by=record.get("created_by"))
 
 
-_COLUMNS = "id, scope, scope_id, name, spec, active, created_at, created_by"
+_COLUMNS = ("id, case when agent_id is null then 'global' else 'project' end as scope, "
+            "agent_id as scope_id, name, spec, active, created_at, created_by")
+"""The stored columns as a version reads them: a null agent_id is the global scope,
+any other the project scope with that id."""
 
 
 def _same_scope() -> str:
-    return "scope = %s and coalesce(scope_id, '') = coalesce(%s, '')"
+    """Rows of one scope, given the scope's agent id (None for global)."""
+    return "coalesce(agent_id, '') = coalesce(%s, '')"
 
 
 def active_profile(conn, name: str, *, scope: str, scope_id: str | None = None,
@@ -278,7 +332,7 @@ def active_profile(conn, name: str, *, scope: str, scope_id: str | None = None,
     with conn.cursor() as cur:
         cur.execute(f"select {_COLUMNS} from {_table(schema)} "
                     f"where {_same_scope()} and name = %s and active"
-                    f"{' for update' if lock else ''}", (scope, scope_id, name))
+                    f"{' for update' if lock else ''}", (scope_id, name))
         found = _records(cur)
     return _version(found[0]) if found else None
 
@@ -300,7 +354,7 @@ def profile_history(conn, name: str, *, scope: str, scope_id: str | None = None,
     with conn.cursor() as cur:
         cur.execute(f"select {_COLUMNS} from {_table(schema)} "
                     f"where {_same_scope()} and name = %s order by created_at, id",
-                    (scope, scope_id, name))
+                    (scope_id, name))
         return [_version(r) for r in _records(cur)]
 
 
@@ -310,8 +364,8 @@ def stored_profiles(conn, *, project: str | None = None,
     and every one of that project. Without a project, the global ones."""
     with conn.cursor() as cur:
         cur.execute(f"select {_COLUMNS} from {_table(schema)} "
-                    "where active and (scope = 'global' or (scope = 'project' and scope_id = %s)) "
-                    "order by name, scope", (project,))
+                    "where active and (agent_id is null or agent_id = %s) "
+                    "order by name, agent_id is not null", (project,))
         return [_version(r) for r in _records(cur)]
 
 
@@ -350,9 +404,9 @@ def save_profile(conn, name: str, spec: Mapping[str, Any], *, scope: str,
                 raise ProfileConflict(f"profile {name!r} was saved by someone else first")
         try:
             cur.execute(f"insert into {_table(schema)} "
-                        "(scope, scope_id, name, spec, active, created_by) "
-                        f"values (%s, %s, %s, %s::jsonb, true, %s) returning {_COLUMNS}",
-                        (scope, scope_id, name, json.dumps(plain), created_by))
+                        "(agent_id, name, spec, active, created_by) "
+                        f"values (%s, %s, %s::jsonb, true, %s) returning {_COLUMNS}",
+                        (scope_id, name, json.dumps(plain), created_by))
         except Exception as exc:
             if _unique_violation(exc):
                 raise ProfileConflict(
