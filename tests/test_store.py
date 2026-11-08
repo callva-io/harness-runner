@@ -111,8 +111,11 @@ def conn():
     connection = psycopg.connect(DSN)
     connection.execute(f'create schema "{schema}"')
     connection.execute(f'set search_path to "{schema}"')
-    for _step, sql in PROFILE_STORE_STEPS:
-        connection.execute(sql)
+    # The profile table alone: the agent key step needs the store's core (its
+    # `agents` table and `store_state_keys`), which a bare schema has not.
+    for step, sql in PROFILE_STORE_STEPS:
+        if step != "0003-agent-key":
+            connection.execute(sql)
     connection.commit()
     try:
         yield connection
@@ -233,7 +236,7 @@ def test_a_store_at_major_1_keeps_every_version_under_the_agent_names(conn):
     place: every row stays, `scope`/`scope_id` become one nullable `agent_id`, and
     nothing in the schema is still named for `harness_profiles`."""
     from callva.harness_runner import PROFILE_STORE_MAJOR, PROFILE_STORE_MINOR
-    assert (PROFILE_STORE_MAJOR, PROFILE_STORE_MINOR) == (2, 0)
+    assert (PROFILE_STORE_MAJOR, PROFILE_STORE_MINOR) == (2, 1)
     assert [step for step, _ in PROFILE_STORE_STEPS][:1] == ["0001-profiles"]
     conn.execute("drop schema if exists harness_m1 cascade")
     conn.execute("create schema harness_m1")
@@ -247,7 +250,7 @@ def test_a_store_at_major_1_keeps_every_version_under_the_agent_names(conn):
                  "'{\"harness\": \"claude\", \"model\": \"g2\"}', true, null), "
                  "('00000000-0000-0000-0000-000000000003', 'project', 'prj_a', 'builder', "
                  "'{\"harness\": \"claude\", \"model\": \"a\"}', true, 'kz')")
-    for _step, sql in PROFILE_STORE_STEPS[1:]:
+    for _step, sql in PROFILE_STORE_STEPS[1:2]:
         conn.execute(sql)
     rows = conn.execute("select id::text, agent_id, name, spec->>'model', active, created_by "
                         "from harness_profile_versions order by id").fetchall()
@@ -281,3 +284,41 @@ def test_a_store_at_major_1_keeps_every_version_under_the_agent_names(conn):
                                   scope="project", scope_id="prj_a", base=mine.id)
     assert created and again.scope == "project" and again.scope_id == "prj_a"
     conn.rollback()
+
+
+def test_the_agent_key_step_takes_a_versions_rows_away_with_its_agent():
+    """On a store with its core (capabilities-contract 0.45 or later), the 0003
+    step keys agent_id to agents ON DELETE CASCADE: a version of a deleted
+    agent goes with it, a global version stays, and a version naming an agent
+    the store does not hold is settled into harness_premig_m9."""
+    if not DSN:
+        pytest.skip("HARNESS_RUNNER_TEST_DSN is unset")
+    psycopg = pytest.importorskip("psycopg")
+    db = pytest.importorskip("capabilities_contract.db")
+    from capabilities_contract.db import _migrate
+    schema = "harness_key_" + secrets.token_hex(4)
+    conn = psycopg.connect(DSN, autocommit=True)
+    conn.execute(f'create schema "{schema}"')
+    try:
+        db.migrate(conn, "core", _migrate.CORE_STEPS, major=_migrate.CORE_VERSION[0],
+                   minor=_migrate.CORE_VERSION[1], schema=schema)
+        conn.execute(f'set search_path to "{schema}"')
+        for _step, sql in PROFILE_STORE_STEPS[:2]:
+            conn.execute(sql)
+        conn.execute("insert into agents (id, kind) values ('aaaaaaaaaaaa', 'agent')")
+        conn.execute("insert into harness_profile_versions (name, agent_id, spec, active) values "
+                     "('mine', 'aaaaaaaaaaaa', '{\"harness\": \"claude\"}', true), "
+                     "('shared', null, '{\"harness\": \"claude\"}', true), "
+                     "('stray', 'cccccccccccc', '{\"harness\": \"claude\"}', true)")
+        with conn.transaction():
+            conn.execute(dict(PROFILE_STORE_STEPS)["0003-agent-key"])
+        assert conn.execute("select source, op from harness_premig_m9").fetchall() == [
+            ("harness_profile_versions", "delete")]
+        with conn.transaction():
+            conn.execute("select set_config('store.deleting_agent', 'aaaaaaaaaaaa', true)")
+            conn.execute("delete from agents where id = 'aaaaaaaaaaaa'")
+        assert conn.execute("select name from harness_profile_versions").fetchall() == [
+            ("shared",)]
+    finally:
+        conn.execute(f'drop schema "{schema}" cascade')
+        conn.close()

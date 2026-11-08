@@ -249,6 +249,13 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 
 ## Changelog
 
+### 0.12.0
+
+A version of an agent's own profile goes with the agent, at store version 2.1. The Python API is unchanged.
+
+- One new step, `0003-agent-key`, gives `harness_profile_versions.agent_id` a foreign key to the store's `agents (id)`, `ON DELETE CASCADE`: when the agent is deleted its project-scope versions go, and global versions (null `agent_id`) stay. A version that names an agent the store no longer holds is removed when the step runs and kept as it was in `harness_premig_m9`.
+- The step calls the store's own `store_state_keys`, which the store's core makes at version 4.0 (capabilities-contract 0.45), so it is applied on such a store; on an older core it fails and is rolled back.
+
 ### 0.11.0
 
 The store table is renamed for the agent naming of the store, at store version 2.0. The Python API is unchanged: `scope`, `scope_id` and every `StoredProfile` field and `to_dict` key stay as they were.

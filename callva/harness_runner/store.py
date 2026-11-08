@@ -43,7 +43,7 @@ PROFILE_STORE_OWNER = "harness"
 `harness_*`."""
 
 PROFILE_STORE_MAJOR = 2
-PROFILE_STORE_MINOR = 0
+PROFILE_STORE_MINOR = 1
 
 SCOPES = ("project", "global")
 """The scopes a stored profile is kept at, the most specific first."""
@@ -139,9 +139,21 @@ create index harness_profile_versions_name_idx
   on harness_profile_versions (agent_id, name, created_at);
 """
 
+# A version of an agent's own profile goes with the agent: its agent_id is a
+# foreign key to the store's agents, ON DELETE CASCADE. The function it calls is
+# the store's own, made by the core at version 4.0 (capabilities-contract 0.45),
+# so the step needs that core; on an older one it fails and is rolled back.
+_AGENT_KEY = r"""
+-- harness: every agent and node reference (and every key inside harness) a foreign key in its
+-- class; guards admit the cascade of a deliberate delete and nothing else.
+SELECT store_state_keys('harness', ARRAY[
+    ARRAY['harness_profile_versions', 'agent_id', 'agents', 'cascade']]);
+"""
+
 PROFILE_STORE_STEPS: tuple[tuple[str, str], ...] = (
     ("0001-profiles", _PROFILES_TABLE),
     ("0002-profile-versions", _PROFILE_VERSIONS),
+    ("0003-agent-key", _AGENT_KEY),
 )
 """The store steps, `(step id, SQL)`, in order. An applied step is never edited;
 a change to the table is a new step and a new version."""
