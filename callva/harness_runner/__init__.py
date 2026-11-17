@@ -12,6 +12,7 @@
 """
 
 from .binaries import Probe, find_binary, probe
+from .conversation import Conversation, open_conversation
 from .discovery import (
     ProfileFile,
     ProfileListing,
@@ -75,6 +76,7 @@ __all__ = [
     "PROFILE_STORE_STEPS",
     "SESSION_MARKERS",
     "TESTED_VERSIONS",
+    "Conversation",
     "Failure",
     "FailureKind",
     "Probe",
@@ -100,6 +102,7 @@ __all__ = [
     "list_profiles",
     "load_profile_schema",
     "machine_folder",
+    "open_conversation",
     "probe",
     "profile_history",
     "profile_text",

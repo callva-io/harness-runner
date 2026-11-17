@@ -177,6 +177,27 @@ def run(
         raise ValueError(
             "codex cannot resume a thread without persisting it: a resumed thread is already "
             "persisted; use Session.fresh() or a profile with persist_session")
+    prepared = _prepare(profile, environ, extra_env)
+    if isinstance(prepared, Result):
+        return prepared
+    launch, env, context = prepared
+    workdir = str(Path(cwd))
+    try:
+        if harness == "claude":
+            return _run_claude(prompt, profile, workdir, launch, env, session, on_event,
+                               cancel, stderr_tail, context, on_start)
+        return _run_codex(prompt, profile, workdir, launch, env, session, on_event,
+                          cancel, stderr_tail, context, on_start)
+    finally:
+        launch.close()
+
+
+def _prepare(profile: Profile, environ: Mapping[str, str] | None,
+             extra_env: Mapping[str, str] | None) -> Result | tuple[Launch, dict, dict]:
+    """Find the harness, guard its version and plan its environment: the launcher, the
+    variables the SDK sets, and the guard's reading for the Result; or the Result of a
+    harness that cannot be started."""
+    harness = profile.harness
     base = dict(os.environ if environ is None else environ)
     binary = profile.cli_path or find_binary(harness, base)
     if not binary or not os.access(binary, os.X_OK):
@@ -199,15 +220,7 @@ def run(
     # started at the file the link points to.
     launch = Launch(harness, os.path.realpath(binary) if harness == "codex" else binary, plan)
     context = {"harness_version": verdict.version, "warnings": warnings}
-    workdir = str(Path(cwd))
-    try:
-        if harness == "claude":
-            return _run_claude(prompt, profile, workdir, launch, plan.set, session, on_event,
-                               cancel, stderr_tail, context, on_start)
-        return _run_codex(prompt, profile, workdir, launch, plan.set, session, on_event,
-                          cancel, stderr_tail, context, on_start)
-    finally:
-        launch.close()
+    return launch, plan.set, context
 
 
 def _stopped_failure(ending: _Stopped, profile: Profile) -> Failure:
@@ -222,10 +235,7 @@ def _run_claude(prompt, profile, cwd, launch, env, session, on_event, cancel, st
     # costs neither: a caller that only reads profiles never loads them.
     from . import claude
 
-    resume_id = session.id if session.kind == "resume" else None
-    session_id = session.id if session.kind == "pinned" else None
-    if session.kind == "fresh":
-        session_id = str(uuid.uuid4())
+    session_id, resume_id = _claude_ids(session)
     outcome = claude.Outcome()
     opts = claude.options(profile, cli_path=str(launch.wrapper), cwd=cwd, env=env,
                           session_id=session_id, resume_id=resume_id,
@@ -238,6 +248,26 @@ def _run_claude(prompt, profile, cwd, launch, env, session, on_event, cancel, st
                         on_stop=lambda: None, tick=notice)
     notice(final=True)
     elapsed = int((time.monotonic() - started) * 1000)
+    return _claude_result(profile, launch, outcome, ending, session_id=session_id,
+                          resume_id=resume_id, elapsed=elapsed, stderr_tail=stderr_tail,
+                          context=context)
+
+
+def _claude_ids(session: Session) -> tuple[str | None, str | None]:
+    """The session id claude is pinned to and the one it resumes; a fresh session's id is
+    chosen here, before launch, so a killed turn is still addressable."""
+    resume_id = session.id if session.kind == "resume" else None
+    session_id = session.id if session.kind == "pinned" else None
+    if session.kind == "fresh":
+        session_id = str(uuid.uuid4())
+    return session_id, resume_id
+
+
+def _claude_result(profile, launch, outcome, ending, *, session_id, resume_id, elapsed,
+                   stderr_tail, context) -> Result:
+    """What one claude turn came to, read from what the SDK handed over."""
+    from . import claude
+
     fields = claude.read(outcome.result) if outcome.result is not None else {}
     common = {
         "harness": "claude",

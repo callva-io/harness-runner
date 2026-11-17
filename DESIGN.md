@@ -6,15 +6,17 @@
 
 One turn: a prompt goes in, a harness runs to its end or its deadline, one `Result` comes out. The library runs the harness through its vendor's SDK against the CLI installed on the machine, configures it only from the profile's explicit knobs, keeps every process it starts under the deadline, reads the harness's report, and classifies a failure by what the harness said. That is the whole job.
 
+A conversation is the same turn sent more than once into one harness process kept open between turns, so a later turn neither pays the process start again nor loses what the process holds (§7, Conversation). Each turn is still one prompt in and one `Result` out under the profile's deadline.
+
 ### Non-goals
 
-It does not schedule, queue, retry, or loop. It holds no ledger of runs, no session store, no conversation memory, and it opens no database: the one table it defines, the stored profiles of §4, lives in the caller's store, migrated by the caller and read and written on the caller's connection. It renders no progress; it hands events to a callback and the caller renders. It does not know what a task, a message or a job is. It never decides what a turn may do: the profile does. It ships six reusable profiles as package data, three per harness, which a caller chooses by name and can shadow with its own.
+It does not schedule, queue, retry, or loop. It holds no ledger of runs, no session store, no conversation memory (a kept-open conversation's memory is the harness process's own), and it opens no database: the one table it defines, the stored profiles of §4, lives in the caller's store, migrated by the caller and read and written on the caller's connection. It renders no progress; it hands events to a callback and the caller renders. It does not know what a task, a message or a job is. It never decides what a turn may do: the profile does. It ships six reusable profiles as package data, three per harness, which a caller chooses by name and can shadow with its own.
 
 ## 2. Names
 
 The vocabulary: a harness is the vendor's agent runtime (Claude Code, the Codex CLI); a profile is one harness with its settings; a run is one turn. The library holds no queue and no long-lived consumer of work; those belong to its callers.
 
-The distribution is `callva-harness-runner` and the import path is `callva.harness_runner`: the distribution name is the import path with dashes, the same rule `callva-livekit` follows, and `callva` is a namespace package with no `__init__.py` so the two coexist in one environment. It was `callva-agentworker` (`callva.agentworker`) up to 0.2.0; the README maps each old name to its new one, and every old name is refused with a message naming the new one. The three nouns a caller uses are `Profile` (how to run), `Session` (which conversation), and `Result` (what came back); `Started` is what a caller learns while the turn runs. A profile kept in a store is a `StoredProfile` (one version), and what a name resolved to there is a `ResolvedProfile`. `run()` is the one verb. `probe()` answers whether a harness is present.
+The distribution is `callva-harness-runner` and the import path is `callva.harness_runner`: the distribution name is the import path with dashes, the same rule `callva-livekit` follows, and `callva` is a namespace package with no `__init__.py` so the two coexist in one environment. It was `callva-agentworker` (`callva.agentworker`) up to 0.2.0; the README maps each old name to its new one, and every old name is refused with a message naming the new one. The three nouns a caller uses are `Profile` (how to run), `Session` (which conversation), and `Result` (what came back); `Started` is what a caller learns while the turn runs. A profile kept in a store is a `StoredProfile` (one version), and what a name resolved to there is a `ResolvedProfile`. `run()` is the verb for one turn; `open_conversation()` opens a `Conversation`, whose `send()` runs one turn after another in the same harness process and whose `close()` ends it. `probe()` answers whether a harness is present.
 
 ## 3. Harnesses
 
@@ -88,6 +90,16 @@ The turn runs on a thread of its own; the calling thread holds the deadline and 
 
 A caller killed outright cannot do any of this, and the harness's tree outlives it.
 
+### Conversation
+
+`open_conversation(profile, cwd, *, session, environ, extra_env, stderr_tail, on_start)` starts one harness process and keeps it open; `Conversation.send(prompt, *, on_event, cancel)` runs one turn in it and returns that turn's `Result`; `Conversation.close()` ends it. It is built from the same parts as `run`: the binary lookup, the guard, the environment plan and the launcher are prepared once, at open, exactly as for a run, `Session` and `on_start` mean what they mean to `run` (`on_start` is called once, while the conversation opens), and every turn's `Result` is read by the code that reads a run's. On claude it is the SDK's `ClaudeSDKClient`, connected at open and sent one user message per turn, the turn ending at the result message.
+
+Opening has the profile's `timeout_seconds`, and so does every turn. A turn that passes it or whose `cancel` is set is stopped as a run is (stop file, the whole tree killed, `timeout` or `cancelled`), and that ends the conversation, since the process that held it is gone; so does a turn that ends without the harness's report. A conversation that cannot open never raises for it: it comes back with `failure` set (the kind and sentence a run would have given) and `is_open` false. Every turn sent into a conversation that is not open returns a failed `Result` naming why (the open's failure, or `error` with the sentence saying it was closed or how it ended). Closing disconnects the SDK, kills whatever is left of the tree and removes the launcher; closing again, or closing a conversation that never opened, does nothing.
+
+The conversation runs on an event loop of its own on a thread of its own: it is called from synchronous code on any thread and never touches the caller's event loop, so a caller on an event loop opens and sends from a worker thread. Turns into one conversation are serialised by a lock; `close` waits for a turn still running, which the caller ends sooner through its `cancel`. Claude reports `total_cost_usd` as the process's running total, so a conversation turn's `cost_usd` is that total less what it was before the turn, and `raw` keeps claude's own figure; tokens, duration and turn count are already the turn's own. Measured on Claude Code 2.1.316 with `claude-read` in an empty directory: open 1.2 s, then two one-word turns of 1.04 s and 0.90 s, the second recalling the first; a `run` resuming the same session for the same follow-up took 2.35 s.
+
+Codex is refused at open with a `ValueError`: the library keeps no codex process open across turns yet (§13), and a conversation that silently started a new process per turn would not be the one asked for.
+
 ## 8. Reading
 
 Claude: the SDK's `ResultMessage` gives `result` as the answer (its `errors` when there is none), `structured_output`, `session_id`, `total_cost_usd`, `duration_ms`, `num_turns`, the four token counts from `usage`, the model that ran from `modelUsage`, `permission_denials`, and `subtype` with `is_error` as the verdict. The SDK raises after it hands over an error result; the result is the report and the raise is not. The last `api_retry` event is kept, because a turn that dies by the deadline while the harness retries a 401 or a 429 has already said why.
@@ -106,7 +118,7 @@ When `output_schema` is given and the harness returned no structured field, the 
 | `structured` | the parsed structured answer, or `None`. |
 | `session_id` | claude session id or codex thread id; set whenever it is known, including after a kill. |
 | `model` | the model that actually ran when claude reports it; on codex the slug a model family resolved to; else the requested one, else `None`. |
-| `cost_usd`, `duration_ms`, `num_turns`, `tokens` | as reported; `None` where the harness does not say. |
+| `cost_usd`, `duration_ms`, `num_turns`, `tokens` | as reported; `None` where the harness does not say. A conversation turn's `cost_usd` is the turn's own share of claude's running total (§7, Conversation). |
 | `permission_denials` | claude's list, empty on codex. |
 | `failure` | `None` when `ok`; otherwise a kind and the harness's own sentence. |
 | `exit_code` | the exit code the claude SDK reported for a failed process, else `None`. |
@@ -132,4 +144,4 @@ The major stays 0. A breaking change or a new feature bumps the minor; a fix bum
 
 ## 13. Later
 
-Progress rendering helpers, if two consumers end up writing the same one. Cost lookup for codex by token price table, if anyone needs a number rather than `None`. A parent watch in the launcher, if a crashed caller's orphaned tree becomes a real problem.
+Progress rendering helpers, if two consumers end up writing the same one. Cost lookup for codex by token price table, if anyone needs a number rather than `None`. A parent watch in the launcher, if a crashed caller's orphaned tree becomes a real problem. A codex conversation through the app-server kept open across turns, one `turn/start` per turn on one thread, when a caller needs one.

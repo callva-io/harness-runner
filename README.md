@@ -57,6 +57,22 @@ else:
 - `cancel`: a `threading.Event`; setting it ends the turn and kills its processes.
 - `on_start`: called once with a `Started` as soon as the harness process runs and its session id is known, before the first `on_event`: `started.harness`, `started.pid` (the harness process, the leader of its own session and process group, so a service that restarts after a crash of its own can end an orphaned tree) and `started.session_id` (claude's pinned or resumed id, codex's thread id). It is not called when no harness process started, such as a missing CLI. A harness that ended before codex gave a thread id is reported when the turn ends, with `session_id` `None`. An exception it raises never ends or alters the turn.
 
+### Conversation
+
+A conversation keeps one claude process open across turns, so a later turn does not pay the process start again and remembers the earlier ones:
+
+```python
+from callva.harness_runner import open_conversation
+
+with open_conversation(profile, cwd="/path/to/project") as conversation:
+    if conversation.failure:                 # it did not open: kind and the harness's sentence
+        print(conversation.failure.kind, conversation.failure.message)
+    first = conversation.send("Pick a colour.")
+    second = conversation.send("Which colour did you pick?")   # each turn is a Result
+```
+
+`open_conversation(profile, cwd, *, session=None, environ=None, extra_env=None, stderr_tail=40, on_start=None)` takes what `run()` takes for the session and the environment, and calls `on_start` once, while it opens. `conversation.send(prompt, *, on_event=None, cancel=None)` runs one turn under the profile's `timeout_seconds` and returns its `Result`; `cost_usd` is that turn's own cost. A turn that times out or is cancelled kills the process's tree, as a run does, and ends the conversation; `conversation.is_open` says whether a turn would still reach the harness, and a turn sent into a conversation that is not open returns a failed `Result` saying why. `conversation.close()` ends the process; closing twice, or closing one that never opened, does nothing. It runs on an event loop and a thread of its own, so it is called from any thread and never touches the caller's event loop (from async code, send through `asyncio.to_thread`); turns into one conversation run one after another. It is claude only: a codex profile raises `ValueError`.
+
 ## Profile
 
 A profile is a flat set of explicit knobs. There is no inheritance and no fence. A knob left at its default leaves the harness's own default in place. A knob one harness cannot honour is refused for that harness with a `ProfileError` when the profile is built, never ignored while it runs. Each knob's docstring on `Profile` says what it does on each harness; `PROFILE_SCHEMA` (shipped as `profile.schema.json`) validates a profile kept in configuration, and `Profile.from_dict` refuses unknown keys.
@@ -248,6 +264,15 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 `quota`, `model_refused`, `not_authenticated`, `timeout`, `cancelled`, `binary_missing`, `max_turns`, `budget`, `invalid_output`, `error`, `crash`, `incompatible_harness`. The harness's own verdict is read first (claude's result subtype, codex's `codexErrorInfo`), then an HTTP status it reports, then its sentence: a spent quota before a refused model, because a subscription spent on one model says both and only one of them is a pause. A claude turn that times out while the harness is retrying a 401 or a 429 is `not_authenticated` or `quota`. `failure.retryable` is true for the kinds where running the same turn again later can succeed.
 
 ## Changelog
+
+### 0.13.0
+
+A conversation kept open across turns. Additive: `run()` and everything in 0.12.3 work unchanged.
+
+- `open_conversation(profile, cwd, ...)` starts one claude process through the SDK's `ClaudeSDKClient` and keeps it open; `Conversation.send(prompt, on_event=, cancel=)` runs one turn in it and returns a `Result`; `Conversation.close()` ends it. A second turn reuses the process and remembers the first: measured on claude 2.1.316, two one-word turns took 1.04 s and 0.90 s after a 1.2 s open, where a `run()` resuming the same session took 2.35 s.
+- Each turn has the profile's deadline and honours `cancel` as a run does; a stopped turn kills the tree and ends the conversation. A conversation that cannot open carries its `failure` instead of raising.
+- Usable from any thread on a loop of its own; turns are serialised.
+- Claude only: a codex profile is refused with `ValueError`.
 
 ### 0.12.3
 

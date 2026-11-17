@@ -10,7 +10,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, SystemMessage, query
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+    SystemMessage,
+    query,
+)
 
 from .profile import Profile
 from .result import Tokens
@@ -102,23 +108,45 @@ class Outcome:
     stderr: deque = field(default_factory=lambda: deque(maxlen=200))
 
 
+def _take(message: Any, outcome: Outcome, on_event: Callable[[dict], None] | None) -> None:
+    """Keep what one SDK message tells the Result, and hand it to `on_event`."""
+    if isinstance(message, SystemMessage):
+        if message.subtype == "init":
+            outcome.init = dict(message.data)
+        elif message.subtype == "api_retry":
+            outcome.last_retry = dict(message.data)
+    elif isinstance(message, ResultMessage):
+        outcome.result = message
+    if on_event is not None:
+        # A caller's renderer never ends the turn.
+        with contextlib.suppress(Exception):
+            on_event(event_dict(message))
+
+
 async def turn(prompt: str, opts: ClaudeAgentOptions, outcome: Outcome,
                on_event: Callable[[dict], None] | None) -> None:
     try:
         async for message in query(prompt=prompt, options=opts):
-            if isinstance(message, SystemMessage):
-                if message.subtype == "init":
-                    outcome.init = dict(message.data)
-                elif message.subtype == "api_retry":
-                    outcome.last_retry = dict(message.data)
-            elif isinstance(message, ResultMessage):
-                outcome.result = message
-            if on_event is not None:
-                # A caller's renderer never ends the turn.
-                with contextlib.suppress(Exception):
-                    on_event(event_dict(message))
+            _take(message, outcome, on_event)
     except BaseException as exc:  # every ending is read, none is raised
         # The SDK raises after yielding an error result; the result is the report.
+        outcome.error = exc
+
+
+def client(opts: ClaudeAgentOptions) -> ClaudeSDKClient:
+    """A client that keeps one harness process open across turns, once connected."""
+    return ClaudeSDKClient(options=opts)
+
+
+async def client_turn(client: Any, prompt: str, outcome: Outcome,
+                      on_event: Callable[[dict], None] | None) -> None:
+    """One turn into a kept-open `ClaudeSDKClient`: send the prompt and read up to and
+    including its result message."""
+    try:
+        await client.query(prompt)
+        async for message in client.receive_response():
+            _take(message, outcome, on_event)
+    except Exception as exc:  # every ending is read, none is raised
         outcome.error = exc
 
 
