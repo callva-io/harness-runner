@@ -22,20 +22,31 @@ _FALLBACK_GLOBS = (
 )
 
 
-def candidate_dirs(environ: Mapping[str, str] | None = None) -> list[str]:
+def _iter_candidate_dirs(environ: Mapping[str, str] | None = None):
+    """PATH first, then the usual places, each once and in order. Lazy, so a
+    lookup that PATH answers never lists a fallback folder: one of them, fnm's
+    per-shell folders, can hold tens of thousands of entries."""
     env = os.environ if environ is None else environ
-    dirs = [d for d in (env.get("PATH") or "").split(os.pathsep) if d]
+    seen = set()
+    for directory in (env.get("PATH") or "").split(os.pathsep):
+        if directory and directory not in seen:
+            seen.add(directory)
+            yield directory
     home = env.get("HOME") or os.path.expanduser("~")
     for pattern in _FALLBACK_GLOBS:
         expanded = pattern.replace("~", home, 1) if pattern.startswith("~") else pattern
         for path in sorted(glob.glob(expanded), reverse=True):
-            if path not in dirs:
-                dirs.append(path)
-    return dirs
+            if path not in seen:
+                seen.add(path)
+                yield path
+
+
+def candidate_dirs(environ: Mapping[str, str] | None = None) -> list[str]:
+    return list(_iter_candidate_dirs(environ))
 
 
 def find_binary(name: str, environ: Mapping[str, str] | None = None) -> str | None:
-    for directory in candidate_dirs(environ):
+    for directory in _iter_candidate_dirs(environ):
         found = shutil.which(name, path=directory)
         if found:
             return found

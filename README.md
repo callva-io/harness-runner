@@ -249,6 +249,10 @@ The launcher makes the harness a session leader. When the deadline passes, or `c
 
 ## Changelog
 
+### 0.12.3
+
+Finding a harness no longer lists the fallback folders when the caller's `PATH` already has it. The search goes `PATH` first and reaches the usual places only when `PATH` misses, so a run's start no longer pays for a crowded fallback folder: fnm's per-shell folders under `~/.local/state/fnm_multishells` grow by one for every shell that runs `fnm env`, and with 19,577 of them the old search held the interpreter for 1.3 s on every run. The answer is the same executable as before; `candidate_dirs()` keeps its signature and now lists a repeated `PATH` entry once.
+
 ### 0.12.2
 
 Claude runs through `claude-agent-sdk` 0.2.183, which bundles Claude Code 2.1.326, in place of 0.2.179. Nothing a profile does changes. The SDK's new option `client_app`, its settings loading for its own `sandbox` option and its CLI discovery are reached only through options the library never passes (it always names the CLI and puts a sandbox inside `settings`). Its messages gain `user_message_uuid` and `user_message_uuids`, which reach `on_event` and `raw` as every SDK message field does, and are `None` for the plain-string prompts the library sends.
